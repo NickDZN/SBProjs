@@ -360,28 +360,21 @@ public class CPHInline
     {
         if (!CheckObsConnection(obsConnection)) return false;
 
-        const int retryIntervalMS = 500;
+        const int retryIntervalMS = 100;
         const int timeoutMS = 5000;
         int elapsedTime = 0;
         int mediaDuration = 0;
         bool mediaDurationRetrieved = false;
 
-        CPH.SendMessage("SMD1: ");
-
         JObject requestData = new JObject { ["inputName"] = obsMediaSource };
 
-        CPH.SendMessage("SMD2: ");
-
         while (elapsedTime < timeoutMS && !mediaDurationRetrieved) {
+            CPH.Wait(retryIntervalMS);
             string obsSendRawResponse = CPH.ObsSendRaw("GetMediaInputStatus", requestData.ToString(), obsConnection);
-            CPH.SendMessage("SMD3: ");
             if (TryParseMediaDuration(obsSendRawResponse, out mediaDuration)) {
-                CPH.SendMessage("SMD3a: ");
                 mediaDurationRetrieved = true;
             } else {
-                elapsedTime += retryIntervalMS;
-                CPH.Wait(retryIntervalMS);
-                CPH.SendMessage("SMD5: ");
+                elapsedTime += retryIntervalMS;                
             }
         }
         if (!mediaDurationRetrieved || mediaDuration <= 0) {

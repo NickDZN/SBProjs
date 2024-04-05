@@ -26,8 +26,9 @@ public class CPHInline
     /// <returns> True if execution was successful, false if not.</returns>
     public bool Execute() 
     {   
+        //Check process isn't already running.
         string dmflStatusGlobal = "DMFL_STATUS_NOW_PLAYING"; 
-        int processRunning = CPH.GetGlobalVar(dmflStatusGlobal, 0, false); 
+        int processRunning = CPH.GetGlobalVar<int>("DMFL_SETUP_SEP_CP_FOLDER", false);
         if (processRunning == 1) {
             return false; 
         }
@@ -36,7 +37,11 @@ public class CPHInline
         if (!Initialize(out int obsConnection, out string obsMediaScene, out string obsMediaSource, 
                         out string mediaFolderPath, out string initiator, out int separateCPFolderExists)) return false;
 
+        if (!ValidateSourceIsInCurrentScene(obsMediaSource, obsConnection)) { 
+            return false; 
+        }
 
+        // Set in progress marker.         
         CPH.SetGlobalVar(dmflStatusGlobal, 1, false);
 
         // Determine if a separate folder for channel points should be used
@@ -47,20 +52,10 @@ public class CPHInline
         if (string.IsNullOrEmpty(mediaFileFolderPath)) return LogError("Media folder path is null or empty.");
         string fileName; 
 
-        // If source is already active, turn it off. 
-        // Set control vars. 
-        const int retryIntervalMS = 50; 
-        const int timeoutMS = 1000; 
-        int elapsedTime = 0;  
-
-        while (CPH.ObsIsSourceVisible(obsMediaScene, obsMediaSource, obsConnection) && elapsedTime < timeoutMS) { 
-            CPH.ObsHideSource(obsMediaScene, obsMediaSource, obsConnection);
-            CPH.Wait(retryIntervalMS);  
-            elapsedTime += retryIntervalMS; 
-        };
-        if (elapsedTime >= timeoutMS) { 
-            return LogError($"Unable to turn off source to start the process: {obsMediaSource}");
-        };
+        // Turn source off if on. 
+        if (!SetOBSSourceOff(obsMediaScene, obsMediaSource, obsConnection)) { 
+            return false; 
+        }
 
         // Get the redeem name based on the trigger type (e.g., Twitch redemption, command), and file path. 
         var mediaDetails = GetMediaFileDetails(initiator, mediaFileFolderPath, useCPFileFolder);
@@ -131,17 +126,17 @@ public class CPHInline
         bool isObsConnectionValid = int.TryParse(CPH.GetGlobalVar<string>("DMFL_SETUP_OBSCONNECTION", true), out obsConnection);
         bool connected = CheckObsConnection(obsConnection);
 
-        if (!connected) { 
-            return LogError("OBS Not Connected.");
-        }
-
         // Retrieve other variables from global settings
         bool isSeparateCPFolderParsed = int.TryParse(CPH.GetGlobalVar<string>("DMFL_SETUP_SEP_CP_FOLDER", true), out separateCPFolderExists);
         obsMediaScene = CPH.GetGlobalVar<string>("DMFL_SETUP_OBSMEDIAASCENE", true);
         obsMediaSource = CPH.GetGlobalVar<string>("DMFL_SETUP_OBSMEDIASOURCE", true);
         mediaFolderPath = CPH.GetGlobalVar<string>("DMFL_MAIN_MEDIAFOLDERPATH", true);
         initiator = args["__source"].ToString();
-       
+
+        if (!connected) { 
+            return LogError("OBS Not Connected.");
+        }
+
         // Sanitize and return: ensure all required fields are valid
         return isObsConnectionValid 
                 && connected 
@@ -153,8 +148,103 @@ public class CPHInline
                 && separateCPFolderExists >= 0; // Assuming non-zero means true/exists
     }
 
+    /// <summary>
+    /// Validate the source for the media exists on this scene. Without this the 
+    /// duration details wont be detectable. 
+    /// </summary>
+    /// 
+    /// <param name="obsMediaSource">   The OBS Source the media is due to play on.</param>
+    /// <param name="obsConnection">    The OBS WebSocket connection ID to check.</param>
+    /// 
+    /// <returns> True if the connection is active, false otherwise. </returns>
+    private bool ValidateSourceIsInCurrentScene(string obsMediaSource, int obsConnection)
+    {
+        // Setup Vars. 
+        const int retryIntervalMS = 500;
+        const int timeoutMS = 5000;
+        int elapsedTime = 0;
+        string currentSceneName = null;
 
+        // Get the current scene
+        JObject getCurrentSceneRequestData = new JObject();
+        while (string.IsNullOrEmpty(currentSceneName) && elapsedTime < timeoutMS) {
+            string getCurrentSceneResponse = CPH.ObsSendRaw("GetCurrentProgramScene", getCurrentSceneRequestData.ToString(), obsConnection);
 
+            if (!string.IsNullOrEmpty(getCurrentSceneResponse)) {
+                JObject getCurrentSceneResponseJson = JObject.Parse(getCurrentSceneResponse);
+                currentSceneName = getCurrentSceneResponseJson["currentProgramSceneName"]?.ToString();
+                break; // Exit loop if current scene name is obtained
+            } else {
+                System.Threading.Thread.Sleep(retryIntervalMS); // Wait before retrying
+                elapsedTime += retryIntervalMS;
+            }
+        }
+
+        // Exit if not found. 
+        if (string.IsNullOrEmpty(currentSceneName)) {
+            return LogError("Failed to get the current program scene or operation timed out.");
+        }
+
+        // Reset Vars. 
+        elapsedTime = 0;
+        JObject getSceneItemsRequestData = new JObject { ["sceneName"] = currentSceneName };
+        JArray sceneItems = null;
+
+        // Get array of all items on current scene for comparison. 
+        while (sceneItems == null && elapsedTime < timeoutMS) {    
+            string getSceneItemsResponse = CPH.ObsSendRaw("GetSceneItemList", getSceneItemsRequestData.ToString(), obsConnection);
+
+            if (!string.IsNullOrEmpty(getSceneItemsResponse)) {
+                JObject getSceneItemsResponseJson = JObject.Parse(getSceneItemsResponse);
+                sceneItems = (JArray)getSceneItemsResponseJson["sceneItems"];
+                break; 
+            }
+            System.Threading.Thread.Sleep(retryIntervalMS); 
+            elapsedTime += retryIntervalMS;
+        }
+
+        if (sceneItems == null) {
+            return LogError($"Failed to get scene items for scene: {currentSceneName} or operation timed out.");
+        }
+
+        // Check if obsMediaSource is in the list of source names
+        foreach (var item in sceneItems) {
+            string sourceName = (string)item["sourceName"];
+            if (!string.IsNullOrEmpty(sourceName) && sourceName.Equals(obsMediaSource, StringComparison.OrdinalIgnoreCase)) {
+                return true;
+            }
+        }
+        return LogError($"Source: {obsMediaSource} not found on this scene. Unable to play.");
+    }
+
+    /// <summary>
+    /// Sets the OBS media source off if it's currently on. 
+    /// </summary>
+    /// 
+    /// <param name="obsMediaScene">        The name of the OBS scene containing the media source.</param>
+    /// <param name="obsMediaSource">       The name of the OBS media source to be updated.</param>
+    /// <param name="obsConnection">        The OBS WebSocket connection ID.</param>
+    /// 
+    /// <returns>True if the media source file was successfully set, false if an error occurred.</returns>
+    private bool SetOBSSourceOff(string obsMediaScene, string obsMediaSource, int obsConnection) {
+
+        //Set Vars.
+        const int retryIntervalMS = 50; 
+        const int timeoutMS = 1000; 
+        int elapsedTime = 0;  
+
+        // Loop over and turn off source if it's on. 
+        while (CPH.ObsIsSourceVisible(obsMediaScene, obsMediaSource, obsConnection) && elapsedTime < timeoutMS) { 
+            CPH.ObsHideSource(obsMediaScene, obsMediaSource, obsConnection);
+            CPH.Wait(retryIntervalMS);  
+            elapsedTime += retryIntervalMS; 
+        };
+
+        if (elapsedTime >= timeoutMS) { 
+            return LogError($"Unable to turn off source to start the process: {obsMediaSource}");
+        };
+        return true; 
+    }
 
     /// <summary>
     /// Determines the media file to play based on the action initiator and configured paths, returning the file name and full path.
@@ -214,17 +304,18 @@ public class CPHInline
     private bool SetObsMediaSourceFile(string obsMediaScene, string obsMediaSource, string fullMediaFilePath, int obsConnection)
     {
        try { 
-            // Set the OBS file for this source. 
-            CPH.ObsSetMediaSourceFile(obsMediaScene, obsMediaSource, fullMediaFilePath, obsConnection);
+            // Check connection first. 
+            if (!CheckObsConnection(obsConnection)) return false;
 
-            if (!CheckObsConnection(obsConnection)) {
-                return false;
-            }
+            // Set the OBS file for this source. 
+            CPH.ObsSetMediaSourceFile(obsMediaScene, obsMediaSource, fullMediaFilePath, obsConnection);        
 
             //Build up an OBS raw request to confirm current file for the source. 
             string requestType = "GetInputSettings";
             JObject requestData = new JObject(); 
             requestData["inputName"] = obsMediaSource;       
+
+            // Send request for current file. 
             string obsSendRawResponse = CPH.ObsSendRaw(requestType, requestData.ToString(), obsConnection);
             
             // Parse the file response. 
@@ -266,65 +357,63 @@ public class CPHInline
     /// 
     /// <returns> True if the media duration is successfully set, false otherwise. </returns>
     private bool SetMediaDuration(string obsMediaScene, string obsMediaSource, string mediaFileIdentifier, bool useCPFileFolder, int obsConnection)
-    {  	
-        // Set control vars. 
-        const int retryIntervalMS = 50; 
-        const int timeoutMS = 5000; 
-              
-        bool responseReceived = false;
-        int elapsedTime = 0;  
+    {
+        if (!CheckObsConnection(obsConnection)) return false;
+
+        const int retryIntervalMS = 500;
+        const int timeoutMS = 5000;
+        int elapsedTime = 0;
         int mediaDuration = 0;
-        JObject responseJson = null;
-        string obsSendRawResponse = string.Empty;
+        bool mediaDurationRetrieved = false;
 
-        // Build up the OBS request. 
-        string requestType = "GetMediaInputStatus";
-        JObject requestData = new JObject(); 
-        requestData["inputName"] = obsMediaSource;         
-        
-        // Confirm OBS is connected. 
-        if (!CheckObsConnection(obsConnection)) {
-            return false; 
-        }
-        
-        //Repeatedly try and get the media duration from OBS until we have it. Without this it's semi-common to move to quick for the OBS response. 
-        while (elapsedTime < timeoutMS && !responseReceived) {
-            CPH.Wait(retryIntervalMS);
-            obsSendRawResponse = CPH.ObsSendRaw(requestType, requestData.ToString(), obsConnection);
+        CPH.SendMessage("SMD1: ");
 
-            if (!string.IsNullOrEmpty(obsSendRawResponse)) {
-                try {
-                    responseJson = JObject.Parse(obsSendRawResponse);
-                    if (responseJson.TryGetValue("mediaDuration", out JToken mediaDurationToken)) {
-                        mediaDuration = mediaDurationToken.Value<int>();
-                        if (mediaDuration > 0) {
-                            responseReceived = true;
-                            break; 
-                        }
-                    }
-                } catch (Exception ex) {
-                    if (elapsedTime == 0 || elapsedTime % 500 == 0){
-                        LogError($"JSON parsing error when trying to parse OBS response. Time: {elapsedTime}. Exception: {ex.Message}. Response: {obsSendRawResponse}", null, false);
-                    }
-                }
-            }            
-            elapsedTime += retryIntervalMS;
-        }
+        JObject requestData = new JObject { ["inputName"] = obsMediaSource };
 
-        // Validate response. 
-        if (!responseReceived) {
-            return LogError("Response not received within the expected timeout.");
+        CPH.SendMessage("SMD2: ");
+
+        while (elapsedTime < timeoutMS && !mediaDurationRetrieved) {
+            string obsSendRawResponse = CPH.ObsSendRaw("GetMediaInputStatus", requestData.ToString(), obsConnection);
+            CPH.SendMessage("SMD3: ");
+            if (TryParseMediaDuration(obsSendRawResponse, out mediaDuration)) {
+                CPH.SendMessage("SMD3a: ");
+                mediaDurationRetrieved = true;
+            } else {
+                elapsedTime += retryIntervalMS;
+                CPH.Wait(retryIntervalMS);
+                CPH.SendMessage("SMD5: ");
+            }
         }
-        if (mediaDuration <= 0) {
-            return LogError("Media duration is non-positive or not found.");
+        if (!mediaDurationRetrieved || mediaDuration <= 0) {
+            return LogError("Failed to retrieve a valid media duration.");
         }
-            
-        // Prepare and set global data.             
         string fileDurationPrefix = useCPFileFolder ? "DMFL_CP_FILE_DURATION_" : "DMFL_FILE_DURATION_";
-        string fileGlobalNameToSave = fileDurationPrefix + mediaFileIdentifier;
-        CPH.SetGlobalVar(fileGlobalNameToSave, mediaDuration, true);
-        
-        return true;    
+        CPH.SetGlobalVar(fileDurationPrefix + mediaFileIdentifier, mediaDuration, true);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Parse Media Duration. Helper method for setMediaDuration.
+    /// Moved into own method to keep complexity down of source method.  
+    /// </summary>
+    /// 
+    /// <param name="obsResponse">      The JSON response from OBS as a string.</param>
+    /// <param name="mediaDuration">    OUT: The parsed media duration in milliseconds </param>
+    /// 
+    /// <returns> True if the connection is active, false otherwise. </returns>
+    private bool TryParseMediaDuration(string obsResponse, out int mediaDuration) {
+        try {
+            JObject responseJson = JObject.Parse(obsResponse);
+            if (responseJson.TryGetValue("mediaDuration", out JToken durationToken)) {
+                mediaDuration = durationToken.Value<int>();
+                return mediaDuration > 0;
+            }
+        } catch (Exception ex) {
+            LogError($"Error parsing OBS response: {ex.Message}", ex, false);
+        }
+        mediaDuration = 0;
+        return false;
     }
 
     /// <summary>
@@ -348,10 +437,10 @@ public class CPHInline
     /// 
     /// <param name="errorMessage">     The error message to log.</param>
     /// <param name="ex">               Optional. Exception associated with the error.</param>
-    /// <param name="termination">      Optional. Indicates whether the error will terminate execution.</param>
+    /// <param name="critical">         Optional. Indicates whether the error will terminate execution.</param>
     /// 
     /// <returns> Always returns false as the script has failed. </returns>
-    private bool LogError(string errorMessage, Exception ex = null, bool termination = true)
+    private bool LogError(string errorMessage, Exception ex = null, bool critical = true)
     {
         string fullMessage = $"Error: {errorMessage}";
         if (ex != null) fullMessage += $", Exception: {ex.Message}";
@@ -361,7 +450,7 @@ public class CPHInline
 
         CPH.LogError(fullMessage);
 
-        if (termination) { 
+        if (critical) { 
             CPH.SetGlobalVar("DMFL_STATUS_NOW_PLAYING", 0, false);
         }
         return false;

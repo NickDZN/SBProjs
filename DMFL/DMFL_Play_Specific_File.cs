@@ -19,6 +19,11 @@ public class CPHInline
         {"Bobbie Jean", "bob_mortimer_billie_jean.mp4"}
     };
 
+    private Dictionary<string, string> mediaFolderFileMapA = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) {
+        {"Gratitude", "gina_gratitude.mp4"},
+        {"Bobbie Jean", "bob_mortimer_billie_jean.mp4"}
+    };
+
     /// <summary>
     /// Main execution method for controlling flow and playing a media file based on the request recieved.
     /// </summary>
@@ -28,34 +33,30 @@ public class CPHInline
     {   
         //Check process isn't already running.
         string dmflStatusGlobal = "DMFL_STATUS_NOW_PLAYING"; 
-        int processRunning = CPH.GetGlobalVar<int>("DMFL_SETUP_SEP_CP_FOLDER", false);
-        if (processRunning == 1) {
-            return false; 
-        }
+        int processRunning = CPH.GetGlobalVar<int>(dmflStatusGlobal, false);
+        if (processRunning == 1) return false; 
 
-        // Attempt to initialise. 
-        if (!Initialize(out int obsConnection, out string obsMediaScene, out string obsMediaSource, 
+        // Initialise variables. 
+        if (!Initialize(out int obsConnection, out string obsMediaScene, out string obsMediaSource,
                         out string mediaFolderPath, out string initiator, out int separateCPFolderExists)) return false;
-
-        if (!ValidateSourceIsInCurrentScene(obsMediaSource, obsConnection)) { 
-            return false; 
+        
+        // Validate source is on this scene. 
+        if (!ValidateSourceIsInCurrentScene(obsMediaSource, obsConnection)) {
+            return false;
         }
 
-        // Set in progress marker.         
-        CPH.SetGlobalVar(dmflStatusGlobal, 1, false);
+        if (!SetOBSSourceOff(obsMediaScene, obsMediaSource, obsConnection)) {
+            return false;
+        }
 
         // Determine if a separate folder for channel points should be used
         bool useCPFileFolder = initiator == "TwitchRewardRedemption" && separateCPFolderExists == 1;
 
-        // If separate CP medial folder is marked as 1, try to resolve the folder. Default to main folder.         
-        string mediaFileFolderPath = useCPFileFolder ? CPH.GetGlobalVar<string>("DMFL_CP_MEDIAFOLDERPATH", true) : mediaFolderPath;        
+        // If separate CP medial folder is marked as 1, try to resolve the folder. Default to main folder.
+        string mediaFileFolderPath = useCPFileFolder ? CPH.GetGlobalVar<string>("DMFL_CP_MEDIAFOLDERPATH", true) : mediaFolderPath;
         if (string.IsNullOrEmpty(mediaFileFolderPath)) return LogError("Media folder path is null or empty.");
-        string fileName; 
+        string fileName;
 
-        // Turn source off if on. 
-        if (!SetOBSSourceOff(obsMediaScene, obsMediaSource, obsConnection)) { 
-            return false; 
-        }
 
         // Get the redeem name based on the trigger type (e.g., Twitch redemption, command), and file path. 
         var mediaDetails = GetMediaFileDetails(initiator, mediaFileFolderPath, useCPFileFolder);
@@ -68,37 +69,13 @@ public class CPHInline
             fileName = mediaDetails.FileName;
         }
 
-        // Set the OBS media source file to the selected media file
-        if (!SetObsMediaSourceFile(obsMediaScene, obsMediaSource, mediaDetails.FileFullPath, obsConnection)) return false;
+        int filesToAdd = 1;
+        // Add required number of files to the queue. 
+        if (!AddMediaFilesToQueue(initiator, mediaFileFolderPath, useCPFileFolder, filesToAdd)) return false; 
 
-        CPH.ObsShowSource(obsMediaScene, obsMediaSource, obsConnection);
-
-        // Check if we should use existing saved durations. 
-        string fileDurationPrefix = useCPFileFolder ? "DMFL_CP_FILE_DURATION_" : "DMFL_FILE_DURATION_";
-        string callExistingTimersString = useCPFileFolder ? "DMFL_CP_CALL_EXISTINGTIMERS" : "DMFL_CALL_EXISTINGTIMERS";         
-        string useExistingTimers = CPH.GetGlobalVar<string>(callExistingTimersString, true);
-        bool useExistingTimerKnowledge = useExistingTimers.ToUpper() == "YES";
-        int fileDuration = 0;
-
-        // If so, look for an existing duration. 
-        if (useExistingTimerKnowledge) { 
-            fileDuration = CPH.GetGlobalVar<int>(fileDurationPrefix + fileName, true);
-        }
-        
-        // If we don't have one still, set one. 
-        if (fileDuration == 0) { 
-            if (!SetMediaDuration(obsMediaScene, obsMediaSource, fileName, useCPFileFolder, obsConnection)) {
-                return LogError("Failed to get or use media duration.");
-            }      
-            fileDuration = CPH.GetGlobalVar<int>(fileDurationPrefix + fileName, true);
-        }
-
-        if (fileDuration > 0) {             
-            CPH.Wait(fileDuration);
-            CPH.ObsHideSource(obsMediaScene, obsMediaSource, obsConnection);
-        } else { 
-            return LogError("No media duration known.");
-        }
+        int filesToPlay = 1;
+        // Play next X files in queue. 
+        if (!PlayNextFromQueue(obsMediaScene, obsMediaSource, useCPFileFolder, obsConnection, filesToPlay)) return false;
         
         CPH.SetGlobalVar(dmflStatusGlobal, 0, false);
         return true;
@@ -116,8 +93,7 @@ public class CPHInline
     /// <param name="separateCPFolderExists">   Out Param: Indicates if a separate folder for channel points is used.</param>
     /// 
     /// <returns> True if initialization is successful and all necessary variables are set, false otherwise. </returns>
-    private bool Initialize(out int obsConnection, out string obsMediaScene, out string obsMediaSource, out string mediaFolderPath, out string initiator, out int separateCPFolderExists)
-    {
+    private bool Initialize(out int obsConnection, out string obsMediaScene, out string obsMediaSource, out string mediaFolderPath, out string initiator, out int separateCPFolderExists) {
         // Initialize output variables to their default values
         obsConnection = -1;
         separateCPFolderExists = 0;
@@ -137,15 +113,17 @@ public class CPHInline
             return LogError("OBS Not Connected.");
         }
 
+        EnsureListsInitialized();
+
         // Sanitize and return: ensure all required fields are valid
         return isObsConnectionValid 
-                && connected 
-                && obsConnection >= 0 
-                && !string.IsNullOrEmpty(obsMediaScene) 
-                && !string.IsNullOrEmpty(obsMediaSource) 
-                && !string.IsNullOrEmpty(mediaFolderPath)
-                && !string.IsNullOrEmpty(initiator)
-                && separateCPFolderExists >= 0; // Assuming non-zero means true/exists
+            && connected 
+            && obsConnection >= 0 
+            && !string.IsNullOrEmpty(obsMediaScene) 
+            && !string.IsNullOrEmpty(obsMediaSource) 
+            && !string.IsNullOrEmpty(mediaFolderPath)
+            && !string.IsNullOrEmpty(initiator)
+            && separateCPFolderExists >= 0;
     }
 
     /// <summary>
@@ -157,8 +135,8 @@ public class CPHInline
     /// <param name="obsConnection">    The OBS WebSocket connection ID to check.</param>
     /// 
     /// <returns> True if the connection is active, false otherwise. </returns>
-    private bool ValidateSourceIsInCurrentScene(string obsMediaSource, int obsConnection)
-    {
+
+    private bool ValidateSourceIsInCurrentScene(string obsMediaSource, int obsConnection) {
         // Setup Vars. 
         const int retryIntervalMS = 500;
         const int timeoutMS = 5000;
@@ -247,16 +225,162 @@ public class CPHInline
     }
 
     /// <summary>
+    /// Retrieves or initializes the current file queue.
+    /// </summary>
+    private void EnsureListsInitialized() {
+        var fileQueueList = CPH.GetGlobalVar<List<string>>("DMFL_CURRENT_QUEUE", true);
+        if (fileQueueList == null) {
+            fileQueueList = new List<string>();
+            CPH.SetGlobalVar("DMFL_CURRENT_QUEUE", fileQueueList, true);
+        }
+
+        var fileHistoryList = CPH.GetGlobalVar<List<string>>("DMFL_LASTPLAYED_QUEUE", true);        
+        if (fileHistoryList == null) {
+            fileHistoryList = new List<string>();
+            CPH.SetGlobalVar("DMFL_LASTPLAYED_QUEUE", fileHistoryList, true);
+        }
+    }
+
+
+    /// <summary>
+    /// Attempts to add a specified number of media files to a queue for playback. 
+    /// If the number of files successfully added is less than the intended number, an error is logged.
+    /// </summary>
+    /// 
+    /// <param name="initiator">        The source of the request, ChannelPoints or Command</param>
+    /// <param name="mediaFolderPath">  Path to the folder containing media files.</param>
+    /// <param name="maxFilesToAdd">    The maximum number of files to attempt to add to the queue. Defaults to 1 if not specified.</param>
+    /// <param name="useCPFileFolder">  Indicates if a separate folder for channel points is used.</param>
+    /// <returns> True if at least one file was successfully added to the queue, false if no files were added. </returns>
+    private bool AddMediaFilesToQueue(string initiator, string mediaFolderPath, bool useCPFileFolder, int maxFilesToAdd = 1) {       
+        int loopCounter = 0; 
+
+        while (loopCounter < maxFilesToAdd) {
+            var mediaDetails = GetMediaFileDetails(initiator, mediaFolderPath, useCPFileFolder);
+            if (!string.IsNullOrEmpty(mediaDetails.FileName)) {
+                AddFileToPlayingQueue(mediaDetails.FileName, mediaDetails.FileFullPath);
+                loopCounter++; 
+            } else {
+                break; 
+            }             
+        }
+
+        if (loopCounter != maxFilesToAdd) {
+            LogError($"{loopCounter} files were added, not {maxFilesToAdd}. Please check the logs.", null, false);
+        }
+                   
+        return loopCounter > 0;
+    }
+
+    /// <summary>
+    /// Adds a file to the queue based on the media file name.
+    /// </summary>
+    /// <param name="fileName">The file name of the file to add to the queue.</param>
+    private void AddFileToPlayingQueue(string fileName, string fileFullPath) {
+        var FileQueueList = CPH.GetGlobalVar<List<(string FileName, string FileFullPath)>>("DMFL_CURRENT_QUEUE", true);
+        FileQueueList.Add((fileName, fileFullPath));
+        CPH.SetGlobalVar("DMFL_CURRENT_QUEUE", FileQueueList, true);
+    }
+
+    /// <summary>
+    /// Adds a file to the queue based on the media file name.
+    /// </summary>
+    /// <param name="fileName">The file name of the file to add to the queue.</param>
+    private void AddFileToHistoryQueue(string fileName, string fullPath) {
+        // Retrieve the history queue list from the global variable
+        var fileQueueHistoryList = CPH.GetGlobalVar<List<(string FileName, string FileFullPath)>>("DMFL_LASTPLAYED_QUEUE", true);  
+        // Add the new entry with both file name and full path
+        fileQueueHistoryList.Add((fileName, fullPath));
+        // Update the global variable with the new list
+        CPH.SetGlobalVar("DMFL_LASTPLAYED_QUEUE", fileQueueHistoryList, true);
+    }
+
+    /// <summary>
+    /// Manages playback from the file queue, playing the next file if available.
+    /// </summary>
+    /// <returns>True if a file is successfully started from the queue; otherwise, false.</returns>
+    private bool PlayNextFromQueue(string obsMediaScene, string obsMediaSource, bool useCPFileFolder, int obsConnection, int FilesToPlay = 1) {
+        // Get the file list. 
+        var fileQueueList = CPH.GetGlobalVar<List<(string FileName, string FileFullPath)>>("DMFL_CURRENT_QUEUE", true);
+        if (fileQueueList == null || !fileQueueList.Any()) {
+            return LogError("Playback queue is empty.");
+        }
+    
+        int filesPlayed = 0; 
+
+        while (filesPlayed < FilesToPlay && fileQueueList.Any()) {
+            
+            var (FileName, FileFullPath) = fileQueueList.First();
+            fileQueueList.RemoveAt(0);
+            CPH.SetGlobalVar("DMFL_CURRENT_QUEUE", fileQueueList, true);
+            
+            // Attempt to play the file.
+            bool videoPlayed = playMediaFile(obsMediaScene, obsMediaSource, useCPFileFolder, obsConnection, FileName, FileFullPath);
+
+            if (videoPlayed) {
+                AddFileToHistoryQueue(FileName, FileFullPath);
+                filesPlayed++;
+            } else { 
+                // Handle marking file as problematic here. 
+            }            
+        }
+        if (filesPlayed < FilesToPlay) {
+            LogError($"Wanted to play {FilesToPlay} files, but only played {filesPlayed}. Queue may not have had enough files.", null, false);
+        }
+        return filesPlayed > 0; 
+    }
+
+    private bool playMediaFile(string obsMediaScene, string obsMediaSource, bool useCPFileFolder, int obsConnection, string fileName, string filepath)
+    {   
+        // Set the OBS media source file to the selected media file
+        if (!SetObsMediaSourceFile(obsMediaScene, obsMediaSource, filepath, obsConnection)) return false;
+
+        CPH.ObsShowSource(obsMediaScene, obsMediaSource, obsConnection);
+
+        // Check if we should use existing saved durations. 
+        string fileDurationPrefix = useCPFileFolder ? "DMFL_CP_FILE_DURATION_" : "DMFL_FILE_DURATION_";
+        string callExistingTimersString = useCPFileFolder ? "DMFL_CP_CALL_EXISTINGTIMERS" : "DMFL_CALL_EXISTINGTIMERS";         
+        string useExistingTimers = CPH.GetGlobalVar<string>(callExistingTimersString, true);
+        bool useExistingTimerKnowledge = useExistingTimers.ToUpper() == "YES";
+        int fileDuration = 0;
+
+        // If so, look for an existing duration. 
+        if (useExistingTimerKnowledge) { 
+            fileDuration = CPH.GetGlobalVar<int>(fileDurationPrefix + fileName, true);
+        }
+        
+        // If we don't have one still, set one. 
+        if (fileDuration == 0) { 
+            if (!SetMediaDuration(obsMediaScene, obsMediaSource, fileName, useCPFileFolder, obsConnection)) {
+                return LogError("Failed to get or use media duration.");
+            }      
+            fileDuration = CPH.GetGlobalVar<int>(fileDurationPrefix + fileName, true);
+        }
+
+        if (fileDuration > 0) {             
+            CPH.Wait(fileDuration);
+            CPH.ObsHideSource(obsMediaScene, obsMediaSource, obsConnection);
+        } else { 
+            return LogError("No media duration known.");
+        }
+        
+        CPH.SetGlobalVar("DMFL_STATUS_NOW_PLAYING", 0, false);
+        return true;
+    }
+
+
+
+    /// <summary>
     /// Determines the media file to play based on the action initiator and configured paths, returning the file name and full path.
     /// </summary>
     /// 
-    /// <param name="initiator">            The action initiator type (e.g., TwitchRewardRedemption, CommandTriggered).</param>
+    /// <param name="initiator">            The source of the request, ChannelPoints or Command (TwitchRewardRedemption, CommandTriggered)</param>
     /// <param name="mediaFolderPath">      Path to the folder containing media files.</param>
     /// <param name="useCPFileFolder">      Indicates if a separate folder for channel points is used.</param>
     /// 
     /// <returns> A tuple containing the media file name and its full path. </returns>
-    private (string FileName, string FileFullPath) GetMediaFileDetails(string initiator, string mediaFolderPath, bool useCPFileFolder)
-    {   
+    private (string FileName, string FileFullPath) GetMediaFileDetails(string initiator, string mediaFolderPath, bool useCPFileFolder) {
+     
 
         // Determines whether this was initiated from a !command or Channel Point Redeem. 
         string keyName = initiator == "TwitchRewardRedemption" ? "rewardName" 
@@ -281,14 +405,17 @@ public class CPHInline
             string fullMediaFilePath = Path.Combine(mediaFolderPath, fileToPlay);
             string fileIdentifier = shouldStoreFileName ? fileToPlay : redeemName;
 
+            // Add file to the queue. 
+            return AddfileToQueue((fileIdentifier, fullMediaFilePath)); 
+
             // Set the prefix for storing file location global and the global to check if an existing file location should be used.
-            string fileLocKeyPrefix = useCPFileFolder ? "DMFL_CP_FILE_LOC_" : "DMFL_FILE_LOC_";
+            //string fileLocKeyPrefix = useCPFileFolder ? "DMFL_CP_FILE_LOC_" : "DMFL_FILE_LOC_";
 
             // Store the full media file path in a global variable using the appropriate key.
-            CPH.SetGlobalVar(fileLocKeyPrefix + fileIdentifier, fullMediaFilePath, true);
-            return (fileIdentifier, fullMediaFilePath);
+            //CPH.SetGlobalVar(fileLocKeyPrefix + fileIdentifier, fullMediaFilePath, true);
+            //return (fileIdentifier, fullMediaFilePath);
         }
-        return (null, null); 
+        return false; 
     }
 
     /// <summary>
@@ -433,8 +560,7 @@ public class CPHInline
     /// <param name="critical">         Optional. Indicates whether the error will terminate execution.</param>
     /// 
     /// <returns> Always returns false as the script has failed. </returns>
-    private bool LogError(string errorMessage, Exception ex = null, bool critical = true)
-    {
+    private bool LogError(string errorMessage, Exception ex = null, bool critical = true) {
         string fullMessage = $"Error: {errorMessage}";
         if (ex != null) fullMessage += $", Exception: {ex.Message}";
 

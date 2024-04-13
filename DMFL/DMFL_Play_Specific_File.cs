@@ -44,7 +44,8 @@ public class CPHInline
         if (!ValidateSourceIsInCurrentScene(obsMediaSource, obsConnection)) {
             return false;
         }
-
+        
+        // Confirm source is disabled. 
         if (!SetOBSSourceOff(obsMediaScene, obsMediaSource, obsConnection)) {
             return false;
         }
@@ -52,22 +53,11 @@ public class CPHInline
         // Determine if a separate folder for channel points should be used
         bool useCPFileFolder = initiator == "TwitchRewardRedemption" && separateCPFolderExists == 1;
 
+        // Not really happy with this, will change it later. 
         // If separate CP medial folder is marked as 1, try to resolve the folder. Default to main folder.
         string mediaFileFolderPath = useCPFileFolder ? CPH.GetGlobalVar<string>("DMFL_CP_MEDIAFOLDERPATH", true) : mediaFolderPath;
         if (string.IsNullOrEmpty(mediaFileFolderPath)) return LogError("Media folder path is null or empty.");
         string fileName;
-
-
-        // Get the redeem name based on the trigger type (e.g., Twitch redemption, command), and file path. 
-        var mediaDetails = GetMediaFileDetails(initiator, mediaFileFolderPath, useCPFileFolder);
-        if (mediaDetails.FileName == null && mediaDetails.FileFullPath == null) {
-            return LogError("No media details found.");
-        } else { 
-            if (!File.Exists(mediaDetails.FileFullPath)) {
-                return LogError($"File not found at path: {mediaDetails.FileFullPath}");
-            }
-            fileName = mediaDetails.FileName;
-        }
 
         int filesToAdd = 1;
         // Add required number of files to the queue. 
@@ -406,7 +396,7 @@ public class CPHInline
             string fileIdentifier = shouldStoreFileName ? fileToPlay : redeemName;
 
             // Add file to the queue. 
-            return AddfileToQueue((fileIdentifier, fullMediaFilePath)); 
+            return (fileIdentifier, fullMediaFilePath); 
 
             // Set the prefix for storing file location global and the global to check if an existing file location should be used.
             //string fileLocKeyPrefix = useCPFileFolder ? "DMFL_CP_FILE_LOC_" : "DMFL_FILE_LOC_";
@@ -415,7 +405,7 @@ public class CPHInline
             //CPH.SetGlobalVar(fileLocKeyPrefix + fileIdentifier, fullMediaFilePath, true);
             //return (fileIdentifier, fullMediaFilePath);
         }
-        return false; 
+        return (null,null); 
     }
 
     /// <summary>

@@ -102,13 +102,9 @@ public class CPHInline
         obsConnection = -1;
         separateCPFolderExists = 0;
 
-        CPH.SendMessage("I1"); 
-
         // Attempt to parse OBS connection as an integer
         bool isObsConnectionValid = int.TryParse(CPH.GetGlobalVar<string>("DMFL_SETUP_OBSCONNECTION", true), out obsConnection);
         bool connected = CheckObsConnection(obsConnection);
-
-        CPH.SendMessage("I2"); 
 
         // Retrieve other variables from global settings
         bool isSeparateCPFolderParsed = int.TryParse(CPH.GetGlobalVar<string>("DMFL_SETUP_SEP_CP_FOLDER", true), out separateCPFolderExists);
@@ -117,28 +113,20 @@ public class CPHInline
         mediaFolderPath = CPH.GetGlobalVar<string>("DMFL_MAIN_MEDIAFOLDERPATH", true);
         initiator = args["__source"].ToString();
 
-        CPH.SendMessage("I3"); 
+        // Detailed error checking for each variable
+        if (!connected) return LogError("OBS Not Connected.");
+        if (!isObsConnectionValid || obsConnection < 0) return LogError("Invalid OBS connection setting.");
+        if (!isSeparateCPFolderParsed) return LogError("Error parsing 'Separate CP Folder Exists' setting.");    
+        if (string.IsNullOrEmpty(obsMediaScene)) return LogError("OBS Media Scene is not set.");
+        if (string.IsNullOrEmpty(obsMediaSource)) return LogError("OBS Media Source is not set.");
+        if (string.IsNullOrEmpty(mediaFolderPath)) return LogError("Media folder path is not set.");
+        if (string.IsNullOrEmpty(initiator)) return LogError("Initiator is not set.");
+        if (!EnsureListsInitialized()) return LogError("Failed to initialize lists.");
 
-        if (!connected) { 
-            return LogError("OBS Not Connected.");
-        }
-
-        CPH.SendMessage("I4");  
-
-        if (!EnsureListsInitialized()) return false; 
-
-        CPH.SendMessage("I5"); 
-
-        // Sanitize and return: ensure all required fields are valid
-        return isObsConnectionValid 
-            && connected 
-            && obsConnection >= 0 
-            && !string.IsNullOrEmpty(obsMediaScene) 
-            && !string.IsNullOrEmpty(obsMediaSource) 
-            && !string.IsNullOrEmpty(mediaFolderPath)
-            && !string.IsNullOrEmpty(initiator)
-            && separateCPFolderExists >= 0;
+        // If all checks pass, the initialization is successful
+        return true;
     }
+
 
     /// <summary>
     /// Validate the source for the media exists on this scene. Without this the 

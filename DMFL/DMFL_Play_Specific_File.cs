@@ -36,22 +36,32 @@ public class CPHInline
         int processRunning = CPH.GetGlobalVar<int>(dmflStatusGlobal, false);
         if (processRunning == 1) return false; 
 
+        CPH.SendMessage("E1"); 
+
         // Initialise variables. 
         if (!Initialize(out int obsConnection, out string obsMediaScene, out string obsMediaSource,
                         out string mediaFolderPath, out string initiator, out int separateCPFolderExists)) return false;
         
+        CPH.SendMessage("E2"); 
+
         // Validate source is on this scene. 
         if (!ValidateSourceIsInCurrentScene(obsMediaSource, obsConnection)) {
             return false;
         }
         
+        CPH.SendMessage("E3"); 
+
         // Confirm source is disabled. 
         if (!SetOBSSourceOff(obsMediaScene, obsMediaSource, obsConnection)) {
             return false;
         }
 
+        CPH.SendMessage("E4");         
+
         // Determine if a separate folder for channel points should be used
         bool useCPFileFolder = initiator == "TwitchRewardRedemption" && separateCPFolderExists == 1;
+
+        CPH.SendMessage("E5"); 
 
         // Not really happy with this, will change it later. 
         // If separate CP medial folder is marked as 1, try to resolve the folder. Default to main folder.
@@ -59,9 +69,13 @@ public class CPHInline
         if (string.IsNullOrEmpty(mediaFileFolderPath)) return LogError("Media folder path is null or empty.");
         string fileName;
 
+        CPH.SendMessage("E6");  
+
         int filesToAdd = 1;
         // Add required number of files to the queue. 
         if (!AddMediaFilesToQueue(initiator, mediaFileFolderPath, useCPFileFolder, filesToAdd)) return false; 
+
+        CPH.SendMessage("E7"); 
 
         int filesToPlay = 1;
         // Play next X files in queue. 
@@ -88,9 +102,13 @@ public class CPHInline
         obsConnection = -1;
         separateCPFolderExists = 0;
 
+        CPH.SendMessage("I1"); 
+
         // Attempt to parse OBS connection as an integer
         bool isObsConnectionValid = int.TryParse(CPH.GetGlobalVar<string>("DMFL_SETUP_OBSCONNECTION", true), out obsConnection);
         bool connected = CheckObsConnection(obsConnection);
+
+        CPH.SendMessage("I2"); 
 
         // Retrieve other variables from global settings
         bool isSeparateCPFolderParsed = int.TryParse(CPH.GetGlobalVar<string>("DMFL_SETUP_SEP_CP_FOLDER", true), out separateCPFolderExists);
@@ -99,11 +117,17 @@ public class CPHInline
         mediaFolderPath = CPH.GetGlobalVar<string>("DMFL_MAIN_MEDIAFOLDERPATH", true);
         initiator = args["__source"].ToString();
 
+        CPH.SendMessage("I3"); 
+
         if (!connected) { 
             return LogError("OBS Not Connected.");
         }
 
-        EnsureListsInitialized();
+        CPH.SendMessage("I4");  
+
+        if (!EnsureListsInitialized()) return false; 
+
+        CPH.SendMessage("I5"); 
 
         // Sanitize and return: ensure all required fields are valid
         return isObsConnectionValid 
@@ -217,18 +241,29 @@ public class CPHInline
     /// <summary>
     /// Retrieves or initializes the current file queue.
     /// </summary>
-    private void EnsureListsInitialized() {
-        var fileQueueList = CPH.GetGlobalVar<List<string>>("DMFL_CURRENT_QUEUE", true);
-        if (fileQueueList == null) {
-            fileQueueList = new List<string>();
-            CPH.SetGlobalVar("DMFL_CURRENT_QUEUE", fileQueueList, true);
-        }
-
-        var fileHistoryList = CPH.GetGlobalVar<List<string>>("DMFL_LASTPLAYED_QUEUE", true);        
-        if (fileHistoryList == null) {
-            fileHistoryList = new List<string>();
-            CPH.SetGlobalVar("DMFL_LASTPLAYED_QUEUE", fileHistoryList, true);
-        }
+    private bool EnsureListsInitialized() {    
+        try {
+            CPH.SendMessage("ELI1"); 
+            // Retrieve or initialize the current queue as a list of tuples
+            var fileQueueList = CPH.GetGlobalVar<List<(string FileName, string FilePath)>>("DMFL_CURRENT_QUEUE", true);
+            CPH.SendMessage("ELI2"); 
+            if (fileQueueList == null) {
+                fileQueueList = new List<(string FileName, string FilePath)>();
+                CPH.SetGlobalVar("DMFL_CURRENT_QUEUE", fileQueueList, true);
+            }
+            CPH.SendMessage("ELI3"); 
+            // Retrieve or initialize the history list as a list of tuples
+            var fileHistoryList = CPH.GetGlobalVar<List<(string FileName, string FilePath)>>("DMFL_LASTPLAYED_QUEUE", true);        
+            CPH.SendMessage("ELI4"); 
+            if (fileHistoryList == null) {
+                fileHistoryList = new List<(string FileName, string FilePath)>();
+                CPH.SetGlobalVar("DMFL_LASTPLAYED_QUEUE", fileHistoryList, true);
+            }
+            CPH.SendMessage("ELI5"); 
+        } catch (Exception ex) {
+            return LogError("Exception occurred while checking lists.", ex);
+        }            
+        return true; 
     }
 
 
@@ -564,4 +599,11 @@ public class CPHInline
         }
         return false;
     }
+  
 }
+
+
+public class MediaFileInfo {
+	public string FileName { get; set; }
+	public string FilePath { get; set; }
+}  

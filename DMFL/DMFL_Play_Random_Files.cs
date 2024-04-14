@@ -25,43 +25,35 @@ public class CPHInline
         int processRunning = CPH.GetGlobalVar<int>(dmflStatusGlobal, false);
         if (processRunning == 1) return false; 
 
-        CPH.SendMessage("E1"); 
-
         // Initialise variables. 
         if (!Initialize(out int obsConnection, out string obsMediaScene, out string obsMediaSource,
                         out string mediaFolderPath, out string initiator, out int separateCPFolderExists)) return false;
         
-        CPH.SendMessage("E2"); 
-
         // Validate source is on this scene. 
         if (!ValidateSourceIsInCurrentScene(obsMediaSource, obsConnection)) return false;
         
-        CPH.SendMessage("E3"); 
-
         // Confirm source is disabled. 
         if (!SetOBSSourceOff(obsMediaScene, obsMediaSource, obsConnection)) return false;
-
-        CPH.SendMessage("E4");         
 
         // Determine which request type this is: Command, or Twitch Redemption.         
         bool useCPFileFolder = initiator == "TwitchRewardRedemption" && separateCPFolderExists == 1;
 
+        // Get the media folder to use. 
         string mediaFileFolderPath = GetMediaFolderDetails(initiator); 
 
-        //Determine the max number of files in the folder. 
+        // Get the max number of files in the folder. 
         int filesInFolder = GetNumberOfFilesInFolder(mediaFileFolderPath); 
 
-        //Determine how many files to add. 
+        // Get how many files to add. 
         int filesToAdd = GetNumberFilesToQueueUp(filesInFolder); 
 
         // Add required number of files to the queue. 
         if (!AddMediaFilesToQueue(initiator, mediaFileFolderPath, filesToAdd)) return false; 
 
-        CPH.SendMessage("E7"); 
-
         // Play next X files in queue. 
         if (!PlayNextFromQueue(obsMediaScene, obsMediaSource, obsConnection, useCPFileFolder, filesToAdd)) return false;
-        
+
+        // Set in use indicator to 0 and return true.         
         CPH.SetGlobalVar(dmflStatusGlobal, 0, false);
         return true;
     }
@@ -330,10 +322,15 @@ public class CPHInline
 
     private bool playMediaFile(string obsMediaScene, string obsMediaSource, bool useCPFileFolder, int obsConnection, string fileName, string filepath)
     {   
+        CPH.SendMessage("PMF1"); 
+        // Confirm source is disabled. 
+        if (!SetOBSSourceOff(obsMediaScene, obsMediaSource, obsConnection)) return false;
         // Set the OBS media source file to the selected media file
         if (!SetObsMediaSourceFile(obsMediaScene, obsMediaSource, filepath, obsConnection)) return false;
 
+        CPH.SendMessage("PMF2"); 
         CPH.ObsShowSource(obsMediaScene, obsMediaSource, obsConnection);
+        CPH.SendMessage("PMF3"); 
 
         // Check if we should use existing saved durations. 
         string fileDurationPrefix = useCPFileFolder ? "DMFL_CP_FILE_DURATION_" : "DMFL_FILE_DURATION_";
@@ -342,11 +339,16 @@ public class CPHInline
         bool useExistingTimerKnowledge = useExistingTimers.ToUpper() == "YES";
         int fileDuration = 0;
 
+        CPH.SendMessage("PMF4"); 
+
         // If so, look for an existing duration. 
         if (useExistingTimerKnowledge) { 
+            CPH.SendMessage("PMF4a"); 
             fileDuration = CPH.GetGlobalVar<int>(fileDurationPrefix + fileName, true);
         }
         
+        CPH.SendMessage("PMF5"); 
+
         // If we don't have one still, set one. 
         if (fileDuration == 0) { 
             if (!SetMediaDuration(obsMediaScene, obsMediaSource, fileName, useCPFileFolder, obsConnection)) {
@@ -354,6 +356,8 @@ public class CPHInline
             }      
             fileDuration = CPH.GetGlobalVar<int>(fileDurationPrefix + fileName, true);
         }
+
+        CPH.SendMessage("PMF6: "fileDuration); 
 
         if (fileDuration > 0) {             
             CPH.Wait(fileDuration);
